@@ -8,14 +8,6 @@ pub fn triangle() {
 
     // building the vertex buffer, which contains all the vertices that we will draw
     let vertex_buffer = {
-        #[derive(Copy, Clone)]
-        struct Vertex {
-            position: [f32; 2],
-            color: [f32; 3],
-        }
-
-        implement_vertex!(Vertex, position, color);
-
         glium::VertexBuffer::new(&display,
             &[
                 Vertex { position: [-0.5, -0.5], color: [0.0, 1.0, 0.0] },
@@ -124,21 +116,4 @@ pub fn triangle() {
 
     // Draw the triangle to the screen.
     draw();
-
-    // the main loop
-    event_loop.run(move |event, _, control_flow| {
-        *control_flow = match event {
-            glutin::event::Event::WindowEvent { event, .. } => match event {
-                // Break from the main loop when the window is closed.
-                glutin::event::WindowEvent::CloseRequested => glutin::event_loop::ControlFlow::Exit,
-                // Redraw the triangle when the window is resized.
-                glutin::event::WindowEvent::Resized(..) => {
-                    draw();
-                    glutin::event_loop::ControlFlow::Poll
-                },
-                _ => glutin::event_loop::ControlFlow::Poll,
-            },
-            _ => glutin::event_loop::ControlFlow::Poll,
-        };
-    });
 }
