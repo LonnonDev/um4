@@ -8,4 +8,9 @@ mod tests {
     fn triangle_test() {
         triangle();
     }
+
+    #[test]
+    fn epic() {
+        let result = "10".parse::<i32>();
+    }
 }
