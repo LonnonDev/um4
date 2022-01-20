@@ -1,8 +1,6 @@
-mod support;
-
 #[allow(unused_imports)]
 use glium::{glutin, Surface};
-use glium::index::PrimitiveType;
+use glium::{index::PrimitiveType, uniform, program, implement_vertex};
 
 fn main() {
     let event_loop = glutin::event_loop::EventLoop::new();
