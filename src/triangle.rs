@@ -1,8 +1,8 @@
-use std::sync::Arc;
+use std::{sync::Arc, cell::RefCell};
 
-use vulkano::{instance::Instance, Version, device::{physical::PhysicalDevice, DeviceExtensions, Device, Features}, swapchain::Swapchain, pipeline::graphics::viewport::Viewport, image::{SwapchainImage, ImageAccess, view::ImageView}, render_pass::{RenderPass, Framebuffer}, sync::{self, GpuFuture}};
+use vulkano::{instance::Instance, Version, device::{physical::PhysicalDevice, DeviceExtensions, Device, Features}, swapchain::{Swapchain, SwapchainCreationError, AcquireError, self}, pipeline::graphics::viewport::Viewport, image::{SwapchainImage, ImageAccess, view::ImageView}, render_pass::{RenderPass, Framebuffer}, sync::{self, GpuFuture, FlushError}, command_buffer::{AutoCommandBufferBuilder, SubpassContents, CommandBufferUsage}};
 use vulkano_win::VkSurfaceBuild;
-use winit::{event_loop::EventLoop, window::{WindowBuilder, Window}, platform::unix::EventLoopExtUnix};
+use winit::{event_loop::{EventLoop, ControlFlow}, window::{WindowBuilder, Window}, platform::unix::EventLoopExtUnix, event::{Event, WindowEvent}};
 
 
 #[test]
@@ -103,6 +103,101 @@ fn triangle() {
 
     // 
     let mut previous_frame_end = Some(Box::new(sync::now(device.clone())) as Box<dyn GpuFuture>);
+
+    
+
+    //main loop
+    event_loop.run(move |event, _, control_flow| {
+        //release any resources when the gpu is done
+        previous_frame_end.take().unwrap().cleanup_finished();
+
+        //recreate the swapchain if requested
+        if recreate_swapchain {
+            // dimensions of the window
+            let dimensions = surface.window().inner_size().into();
+            let (new_swapchain, new_images) =
+                match swapchain.recreate().dimensions(dimensions).build() {
+                    Ok(r) => r,
+                    //generally means the window is being resized by the user, so it is ignored
+                    Err(SwapchainCreationError::UnsupportedDimensions) => return,
+                    Err(e) => panic!("Failed to recreate swapchain: {:?}", e),
+                };
+        
+            swapchain = new_swapchain;
+            framebuffers = window_size_dependent_setup(
+                &new_images,
+                render_pass.clone(),
+                &mut viewport,
+            );
+            recreate_swapchain = false;
+        }
+
+        //handle various events
+        match event {
+            //close window
+            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
+                *control_flow = ControlFlow::Exit;
+            },
+            //resize window
+            Event::WindowEvent { event: WindowEvent::Resized(_), .. } => {
+                recreate_swapchain = true;
+            },
+            //all clear
+            Event::RedrawEventsCleared => {
+                // do our render operations here
+
+                //get the next image from the swapchain
+                let (image_num, suboptimal, acquire_future) = match swapchain::acquire_next_image(swapchain.clone(), None) {
+                    Ok(r) => r,
+                    Err(AcquireError::OutOfDate) => {
+                        recreate_swapchain = true;
+                        return;
+                    },
+                    Err(e) => panic!("Failed to acquire next image: {:?}", e)
+                };
+                //if the swapchain settings are "suboptimal" according to vulkan, recreate the swapchain
+                if suboptimal {
+                    recreate_swapchain = true;
+                }
+
+                let clear_values = vec!([0.0, 0.0, 0.0, 1.0].into());
+
+                //create the command buffer builder
+                let mut cmd_buffer_builder = AutoCommandBufferBuilder::primary(
+                    device.clone(), queue.family(), CommandBufferUsage::OneTimeSubmit).unwrap();
+                cmd_buffer_builder
+                    .begin_render_pass(framebuffers[image_num].clone(), SubpassContents::Inline, clear_values.clone())
+                    .unwrap()
+                    .end_render_pass()
+                    .unwrap();
+                //create the command buffer
+                let command_buffer = cmd_buffer_builder.build().unwrap();
+
+                //make sure we aren't rendering before everything else is done
+                let future = previous_frame_end.join(acquire_future)
+                    .then_execute(queue.clone(), command_buffer).unwrap()
+                    .then_swapchain_present(queue.clone(), swapchain.clone(), image_num)
+                    .then_signal_fence_and_flush();
+                
+                //checking up on what our graphics hardware is doing :)
+                match future {
+                    Ok(future) => {
+                        previous_frame_end = Some(Box::new(future) as Box<_>);
+                    }
+                    Err(FlushError::OutOfDate) => {
+                        recreate_swapchain = true;
+                        previous_frame_end = Some(Box::new(sync::now(device.clone())) as Box<_>);
+                    }
+                    Err(e) => {
+                        println!("Failed to flush future: {:?}", e);
+                        previous_frame_end = Some(Box::new(sync::now(device.clone())) as Box<_>);
+                    }
+                }
+            },
+            _ => {}
+        }
+    });
+        
 
 }
 
