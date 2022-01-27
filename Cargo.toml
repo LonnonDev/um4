@@ -6,4 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-glium = "0.31.0"
+winit = "0.26.1"
+vulkano = { git = "https://github.com/vulkano-rs/vulkano" }
+vulkano-win = { git = "https://github.com/vulkano-rs/vulkano" }
+vulkano-shaders = { git = "https://github.com/vulkano-rs/vulkano" }

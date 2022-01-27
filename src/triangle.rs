@@ -1,146 +1,128 @@
-#[allow(unused_imports)]
-use glium::{glutin, Surface};
-use glium::{index::PrimitiveType, uniform, program, implement_vertex};
+use std::sync::Arc;
 
-fn main() {
-    let event_loop = glutin::event_loop::EventLoop::new();
-    let wb = glutin::window::WindowBuilder::new();
-    let cb = glutin::ContextBuilder::new();
-    let display = glium::Display::new(wb, cb, &event_loop).unwrap();
+use vulkano::{instance::Instance, Version, device::{physical::PhysicalDevice, DeviceExtensions, Device, Features}, swapchain::Swapchain, pipeline::graphics::viewport::Viewport, image::{SwapchainImage, ImageAccess, view::ImageView}, render_pass::{RenderPass, Framebuffer}, sync::{self, GpuFuture}};
+use vulkano_win::VkSurfaceBuild;
+use winit::{event_loop::EventLoop, window::{WindowBuilder, Window}, platform::unix::EventLoopExtUnix};
 
-    // building the vertex buffer, which contains all the vertices that we will draw
-    let vertex_buffer = {
-        #[derive(Copy, Clone)]
-        struct Vertex {
-            position: [f32; 2],
-            color: [f32; 3],
+
+#[test]
+fn triangle() {
+    // Black box that has Vulkan Stuff written on it
+    let instance = {
+        let extensions = vulkano_win::required_extensions();
+        Instance::new(None, Version::V1_2, &extensions, None).unwrap()
+    };
+
+    // Get's the first gpu
+    let physical = PhysicalDevice::enumerate(&instance).next().unwrap();
+
+    // Create the event loop
+    let event_loop: EventLoop<()> = EventLoop::new_any_thread();
+
+    // What vulkan can render to, where vulkan can stick the output of stuff
+    let surface = WindowBuilder::new().build_vk_surface(&event_loop, instance.clone()).unwrap();
+
+    // QueueFamily is the type of operation we can do and Queue is the instance of the type of operation
+    // Makes sure queue supports graphics and surface is alsos supported
+    let queue_family = physical.queue_families().find(|&q| {
+        q.supports_graphics() && surface.is_supported(q).unwrap_or(false)
+    }).unwrap();
+
+    // Features
+    let mut physical_features = Features::none();
+
+    // Software repsentation of hardware being stored in physical
+    let device_ext = DeviceExtensions { khr_swapchain: true, .. DeviceExtensions::none() };
+    // The device and priority
+    let (device, mut queues) = Device::new(physical, &physical_features, &device_ext,
+[(queue_family, 0.5)].iter().cloned()).unwrap();
+
+    // A single queue
+    let queue = queues.next().unwrap();
+
+    // How we show the user what frame we rendered
+    let (mut swapchain, images) = {
+        // Gets capabilities of the surface's physical device
+        let caps = surface.capabilities(physical).unwrap();
+        // supported usage of the image
+        let usage = caps.supported_usage_flags;
+        let alpha = caps.supported_composite_alpha.iter().next().unwrap();
+        // Supported formats
+        let format = caps.supported_formats[0].0;
+        // Size of window
+        let dimensions: [u32; 2] = surface.window().inner_size().into();
+    
+        // starts the swapchain
+        Swapchain::start(device.clone(), surface.clone())
+            .num_images(caps.min_image_count)
+            .format(format)
+            .dimensions(dimensions)
+            .usage(usage)
+            .sharing_mode(&queue)
+            .composite_alpha(alpha)
+            .build()
+            .unwrap()
+    };
+
+    // Where the inputs and outputs for the graphics hardware is
+    let render_pass = vulkano::single_pass_renderpass!(
+        device.clone(),
+        attachments: {
+            // Frame buffer for color
+            color: {
+                // should be cleared at the start of a render pass
+                load: Clear,
+                // store the result of the render pass
+                store: Store,
+                // format of the render attachment
+                format: swapchain.format(),
+                // how many samples the render attachment should have
+                samples: 1,
+            }
+        },
+        // Passes the color buffer
+        pass: {
+            color: [color],
+            depth_stencil: {}
         }
+    )
+    .unwrap();
 
-        implement_vertex!(Vertex, position, color);
-
-        glium::VertexBuffer::new(&display,
-            &[
-                Vertex { position: [-0.5, -0.5], color: [0.0, 1.0, 0.0] },
-                Vertex { position: [ 0.0,  0.5], color: [0.0, 0.0, 1.0] },
-                Vertex { position: [ 0.5, -0.5], color: [1.0, 0.0, 0.0] },
-            ]
-        ).unwrap()
+    // window viewport
+    let mut viewport = Viewport {
+        origin: [0.0, 0.0],
+        dimensions: [0.0, 0.0],
+        depth_range: 0.0..1.0,
     };
 
-    // building the index buffer
-    let index_buffer = glium::IndexBuffer::new(&display, PrimitiveType::TrianglesList,
-                                               &[0u16, 1, 2]).unwrap();
+    // Framebuffer
+    let mut framebuffers = window_size_dependent_setup(&images, render_pass.clone(), &mut viewport);
 
-    // compiling shaders and linking them together
-    let program = program!(&display,
-        140 => {
-            vertex: "
-                #version 140
-                uniform mat4 matrix;
-                in vec2 position;
-                in vec3 color;
-                out vec3 vColor;
-                void main() {
-                    gl_Position = vec4(position, 0.0, 1.0) * matrix;
-                    vColor = color;
-                }
-            ",
+    // variable to say when to recreate the swapchain
+    let mut recreate_swapchain = false;
 
-            fragment: "
-                #version 140
-                in vec3 vColor;
-                out vec4 f_color;
-                void main() {
-                    f_color = vec4(vColor, 1.0);
-                }
-            "
-        },
+    // 
+    let mut previous_frame_end = Some(Box::new(sync::now(device.clone())) as Box<dyn GpuFuture>);
 
-        110 => {
-            vertex: "
-                #version 110
-                uniform mat4 matrix;
-                attribute vec2 position;
-                attribute vec3 color;
-                varying vec3 vColor;
-                void main() {
-                    gl_Position = vec4(position, 0.0, 1.0) * matrix;
-                    vColor = color;
-                }
-            ",
+}
 
-            fragment: "
-                #version 110
-                varying vec3 vColor;
-                void main() {
-                    gl_FragColor = vec4(vColor, 1.0);
-                }
-            ",
-        },
+fn window_size_dependent_setup(
+    images: &[Arc<SwapchainImage<Window>>],
+    render_pass: Arc<RenderPass>,
+    viewport: &mut Viewport,
+) -> Vec<Arc<Framebuffer>> {
+    let dimensions = images[0].dimensions().width_height();
+    viewport.dimensions = [dimensions[0] as f32, dimensions[1] as f32];
 
-        100 => {
-            vertex: "
-                #version 100
-                uniform lowp mat4 matrix;
-                attribute lowp vec2 position;
-                attribute lowp vec3 color;
-                varying lowp vec3 vColor;
-                void main() {
-                    gl_Position = vec4(position, 0.0, 1.0) * matrix;
-                    vColor = color;
-                }
-            ",
-
-            fragment: "
-                #version 100
-                varying lowp vec3 vColor;
-                void main() {
-                    gl_FragColor = vec4(vColor, 1.0);
-                }
-            ",
-        },
-    ).unwrap();
-
-    // Here we draw the black background and triangle to the screen using the previously
-    // initialised resources.
-    //
-    // In this case we use a closure for simplicity, however keep in mind that most serious
-    // applications should probably use a function that takes the resources as an argument.
-    let draw = move || {
-        // building the uniforms
-        let uniforms = uniform! {
-            matrix: [
-                [1.0, 0.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0f32]
-            ]
-        };
-
-        // drawing a frame
-        let mut target = display.draw();
-        target.clear_color(0.0, 0.0, 0.0, 0.0);
-        target.draw(&vertex_buffer, &index_buffer, &program, &uniforms, &Default::default()).unwrap();
-        target.finish().unwrap();
-    };
-
-    // Draw the triangle to the screen.
-    draw();
-
-    // the main loop
-    event_loop.run(move |event, _, control_flow| {
-        *control_flow = match event {
-            glutin::event::Event::WindowEvent { event, .. } => match event {
-                // Break from the main loop when the window is closed.
-                glutin::event::WindowEvent::CloseRequested => glutin::event_loop::ControlFlow::Exit,
-                // Redraw the triangle when the window is resized.
-                glutin::event::WindowEvent::Resized(..) => {
-                    draw();
-                    glutin::event_loop::ControlFlow::Poll
-                },
-                _ => glutin::event_loop::ControlFlow::Poll,
-            },
-            _ => glutin::event_loop::ControlFlow::Poll,
-        };
-    });
+    images
+        .iter()
+        .map(|image| {
+            let view = ImageView::new(image.clone()).unwrap();
+            Framebuffer::start(render_pass.clone())
+                .add(view)
+                .unwrap()
+                .build()
+                .unwrap()
+        })
+        .collect::<Vec<_>>()
 }
